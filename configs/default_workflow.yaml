@@ -1,0 +1,55 @@
+# 示例工作流：完整的 Web 应用扫描
+# Example Workflow: Full Web Application Scan
+
+name: "web_app_scan"
+description: "完整的 Web 应用安全扫描工作流"
+global_timeout: 7200  # 2 小时
+
+tasks:
+  # 第一阶段：端口扫描
+  - id: "port_scan"
+    tool: "nmap"
+    depends_on: []
+    target: null  # 从命令行参数继承
+    options:
+      scan_type: "syn"
+      ports: "80,443,8000,8080,8443"
+      service_detection: true
+      timing: 4
+      min_rate: 1000
+
+  # 第二阶段：Web 指纹识别（依赖端口扫描）
+  - id: "web_fingerprint"
+    tool: "whatweb"
+    depends_on: ["port_scan"]
+    options:
+      aggression: 3
+      output_format: "json"
+
+  # 第三阶段：漏洞扫描（依赖指纹识别）
+  - id: "nuclei_scan"
+    tool: "nuclei"
+    depends_on: ["web_fingerprint"]
+    options:
+      templates: ["cves", "vulnerabilities", "exposures"]
+      severity: ["critical", "high", "medium"]
+      rate_limit: 150
+
+  # 第四阶段：目录爆破（与漏洞扫描并行）
+  - id: "directory_fuzz"
+    tool: "ffuf"
+    depends_on: ["web_fingerprint"]
+    options:
+      wordlist: "configs/wordlists/common.txt"
+      threads: 40
+      match_codes: [200, 301, 302, 401, 403]
+
+  # 第五阶段：SQL 注入测试（依赖目录爆破，发现参数后执行）
+  - id: "sql_injection_test"
+    tool: "sqlmap"
+    depends_on: ["directory_fuzz"]
+    condition: "has_parameters"  # 条件执行
+    options:
+      risk: 1
+      level: 1
+      batch: true

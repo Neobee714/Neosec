@@ -1,0 +1,67 @@
+# NeoSec 默认配置文件 (Default Configuration File)
+# 渗透测试百宝箱 - 企业级自动化安全测试框架
+
+# 项目基本信息
+project_name: "NeoSec"
+log_level: "INFO"  # TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
+output_dir: "data/reports"
+wordlists_dir: "configs/wordlists"
+
+# 工具配置 (Tools Configuration)
+tools:
+  nmap:
+    name: "nmap"
+    binary_path: "nmap"  # 如果在 PATH 中，直接写工具名；否则写完整路径
+    enabled: true
+    timeout: 600  # 超时时间（秒）
+    max_concurrent: 2  # 最大并发实例数
+    custom_args:
+      scan_type: "syn"
+      timing: 4
+      min_rate: 1000
+
+  nuclei:
+    name: "nuclei"
+    binary_path: "nuclei"
+    enabled: true
+    timeout: 300
+    max_concurrent: 5
+    custom_args:
+      templates_dir: "nuclei-templates"
+      severity: ["critical", "high", "medium"]
+
+  ffuf:
+    name: "ffuf"
+    binary_path: "ffuf"
+    enabled: true
+    timeout: 300
+    max_concurrent: 3
+    custom_args:
+      wordlist: "configs/wordlists/common.txt"
+      threads: 40
+
+  sqlmap:
+    name: "sqlmap"
+    binary_path: "sqlmap"
+    enabled: true
+    timeout: 600
+    max_concurrent: 1  # SQLmap 资源消耗大，限制并发
+    custom_args:
+      risk: 1
+      level: 1
+
+# 工作流配置 (Workflows Configuration)
+workflows:
+  basic_scan:
+    name: "basic_scan"
+    description: "基础扫描工作流：端口扫描 -> 服务识别"
+    global_timeout: 3600
+    tasks:
+      - id: "port_scan"
+        tool: "nmap"
+        depends_on: []
+        options:
+          scan_type: "syn"
+          ports: "1-1000"
+          service_detection: true
+          timing: 4
