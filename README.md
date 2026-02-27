@@ -201,10 +201,13 @@ pytest --cov=src tests/
 
 ## 联系方式
 
-- 项目主页: [GitHub Repository]
-- 问题反馈: [Issues]
-- 文档: [Wiki]
+- **项目主页**: [https://github.com/Neobee714/Neosec](https://github.com/Neobee714/Neosec)
+- **问题反馈**: [https://github.com/Neobee714/Neosec/issues](https://github.com/Neobee714/Neosec/issues)
+- **文档说明**: [https://github.com/Neobee714/Neosec/wiki](https://github.com/Neobee714/Neosec/wiki)
+- **Blog**: [https://neobee.top](https://neobee.top)
+- **email**: neobee@neobee.top
 
+---
 ---
 
 **免责声明**: 本工具仅用于授权的安全测试和教育目的。使用者需对其行为负责，开发者不承担任何滥用责任。
