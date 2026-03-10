@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "neosec"
-version = "0.1.0"
+version = "0.1.1"
 description = "Network security workflow automation CLI tool"
 authors = ["Neobee714 <1321247001@qq.com>"]
 readme = "README.md"

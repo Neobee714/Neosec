@@ -1,5 +1,6 @@
 """测试工作流执行引擎"""
 import asyncio
+import json
 import types
 
 import pytest
@@ -195,3 +196,68 @@ def test_check_condition_can_use_open_ports_list():
     }
 
     assert engine._check_condition(step)
+
+
+def test_summarize_ffuf_output_strips_control_sequences():
+    engine = WorkflowEngine(DummyConfig(), verbose=False, quiet=True, dry_run=False)
+
+    ffuf_output = "\x1b[2Kadmin [Status: 301, Size: 0, Words: 1, Lines: 1, Duration: 20ms]\x1b[0m\n"
+    summary = engine._summarize_ffuf_output(ffuf_output)
+
+    assert "Found entries:" in summary
+    assert "admin" in summary
+    assert "[2K" not in summary
+    assert "[0m" not in summary
+
+def test_parse_ffuf_result_generates_markdown_report(tmp_path):
+    engine = WorkflowEngine(DummyConfig(), verbose=False, quiet=True, dry_run=False)
+
+    ffuf_json = {
+        "commandline": "ffuf -u http://example.com/FUZZ -o ffuf_80_result.json -of json",
+        "time": "2026-03-10T11:50:53Z",
+        "results": [
+            {
+                "input": {"FUZZ": "admin"},
+                "status": 301,
+                "length": 0,
+                "words": 1,
+                "lines": 1,
+                "duration": 20000000,
+                "url": "http://example.com/admin",
+                "host": "example.com",
+                "content-type": "text/html",
+                "redirectlocation": "/admin/",
+            }
+        ],
+    }
+
+    json_path = tmp_path / "ffuf_80_result.json"
+    json_path.write_text(json.dumps(ffuf_json), encoding="utf-8")
+
+    result = engine._parse_ffuf_result("", {"-o": str(json_path), "-of": "json"})
+
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["path"] == "admin"
+
+    md_path = tmp_path / "ffuf_80_result.md"
+    assert md_path.exists()
+
+    md = md_path.read_text(encoding="utf-8")
+    assert "# FFUF 扫描结果" in md
+    assert "| admin | 301 |" in md
+
+
+def test_summarize_ffuf_entries_contains_markdown_path():
+    engine = WorkflowEngine(DummyConfig(), verbose=False, quiet=True, dry_run=False)
+
+    summary = engine._summarize_ffuf_entries(
+        {
+            "entries": [
+                {"path": "admin", "status": 301, "length": 0, "duration_ms": 20.0, "redirectlocation": "/admin/"}
+            ],
+            "report_markdown": "ffuf_80_result.md",
+        }
+    )
+
+    assert "Readable report: ffuf_80_result.md" in summary
+    assert "- admin [status=301" in summary

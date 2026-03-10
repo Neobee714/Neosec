@@ -1,6 +1,6 @@
 {
   "name": "nmap_ffuf_workflow",
-  "description": "Nmap绔彛鎵弿鍚庡Web绔彛杩涜ffuf鐩綍鐖嗙牬",
+  "description": "Nmap端口扫描后对Web端口进行ffuf目录爆破",
   "version": "1.0.0",
   "variables": {
     "target": "",
@@ -8,11 +8,11 @@
     "nmap_ports": "1-10000",
     "ffuf_threads": "40"
   },
-  "steps": [  
+  "steps": [
     {
       "id": "port_scan",
       "order": 1,
-      "name": "Nmap绔彛鎵弿",
+      "name": "Nmap端口扫描",
       "tool": "nmap",
       "args": {
         "-sV": true,
@@ -30,7 +30,7 @@
     {
       "id": "ffuf_port_80",
       "order": 2,
-      "name": "HTTP(80)鐩綍鐖嗙牬",
+      "name": "HTTP(80)目录爆破",
       "depends_on": ["port_scan"],
       "when": {
         "type": "contains",
@@ -55,7 +55,7 @@
     {
       "id": "ffuf_port_443",
       "order": 2,
-      "name": "HTTPS(443)鐩綍鐖嗙牬",
+      "name": "HTTPS(443)目录爆破",
       "depends_on": ["port_scan"],
       "when": {
         "type": "contains",
@@ -80,7 +80,7 @@
     {
       "id": "ffuf_port_8080",
       "order": 2,
-      "name": "HTTP(8080)鐩綍鐖嗙牬",
+      "name": "HTTP(8080)目录爆破",
       "depends_on": ["port_scan"],
       "when": {
         "type": "contains",
@@ -105,7 +105,7 @@
     {
       "id": "ffuf_port_8000",
       "order": 2,
-      "name": "HTTP(8000)鐩綍鐖嗙牬",
+      "name": "HTTP(8000)目录爆破",
       "depends_on": ["port_scan"],
       "when": {
         "type": "contains",
@@ -130,7 +130,7 @@
     {
       "id": "ffuf_port_8888",
       "order": 2,
-      "name": "HTTP(8888)鐩綍鐖嗙牬",
+      "name": "HTTP(8888)目录爆破",
       "depends_on": ["port_scan"],
       "when": {
         "type": "contains",
@@ -155,11 +155,11 @@
     {
       "id": "summary",
       "order": 3,
-      "name": "鐢熸垚鎵弿鎽樿",
+      "name": "生成扫描摘要",
       "depends_on": ["port_scan"],
       "tool": "echo",
       "args": {
-        "message": "鎵弿瀹屾垚 - 鐩爣: {{target}}"
+        "message": "扫描完成 - 目标: {{target}}"
       },
       "timeout": 10,
       "retry": 0,

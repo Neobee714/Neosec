@@ -40,6 +40,8 @@ class WorkflowEngine:
         }
 
         self.steps_status: dict[str, dict[str, Any]] = {}
+        self._ansi_escape_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        self._non_printable_re = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
     async def execute(
         self,
@@ -315,6 +317,283 @@ class WorkflowEngine:
 
         return results
 
+    def _print_command(self, cmd: list[str]) -> None:
+        """打印命令，避免过长行与控制字符污染。"""
+        if not (self.verbose or self.dry_run):
+            return
+
+        console.print("[dim]命令:[/dim]")
+        console.print(f"  {' '.join(cmd)}", markup=False)
+
+    def _print_tool_output(self, tool_name: str, raw_output: str, result: dict[str, Any]) -> None:
+        """打印工具输出摘要（verbose 模式）。"""
+        if not self.verbose:
+            return
+
+        summary = self._summarize_tool_output(tool_name, raw_output, result)
+        if not summary:
+            return
+
+        console.print("[dim]输出:[/dim]")
+        console.print(summary, markup=False)
+
+    def _summarize_tool_output(self, tool_name: str, raw_output: str, result: dict[str, Any]) -> str:
+        """按工具生成可读的输出摘要。"""
+        if tool_name == "nmap":
+            open_ports = result.get("open_ports", [])
+            services = result.get("services", [])
+            service_names = sorted({str(item.get("service", "unknown")) for item in services})
+
+            ports_text = ",".join(str(p) for p in open_ports) if open_ports else "-"
+            if service_names:
+                shown = ",".join(service_names[:8])
+                if len(service_names) > 8:
+                    shown += f",...(+{len(service_names) - 8})"
+            else:
+                shown = "-"
+
+            return (
+                f"Open ports: {ports_text}\n"
+                f"Services: {shown}\n"
+                f"Service records: {len(services)}"
+            )
+
+        if tool_name == "ffuf":
+            ffuf_entries = result.get("entries", [])
+            if isinstance(ffuf_entries, list) and ffuf_entries:
+                return self._summarize_ffuf_entries(result)
+            ffuf_summary = self._summarize_ffuf_output(raw_output)
+            if ffuf_summary:
+                return ffuf_summary
+
+        cleaned = self._clean_console_output(raw_output)
+        if not cleaned.strip():
+            return "(no stdout)"
+
+        lines = cleaned.splitlines()
+        max_lines = 25
+        if len(lines) > max_lines:
+            return "\n".join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
+
+        return cleaned
+
+    def _summarize_ffuf_output(self, raw_output: str) -> str:
+        """解析 ffuf 输出，提取发现条目摘要。"""
+        cleaned = self._clean_console_output(raw_output)
+        if not cleaned.strip():
+            return "No ffuf output"
+
+        compact = re.sub(r",\s*\n\s*", ", ", cleaned)
+        pattern = re.compile(
+            r"(?:^|\n)\s*(?P<path>[^\n\[]*?)\s*"
+            r"\[Status:\s*(?P<status>\d+),\s*"
+            r"Size:\s*(?P<size>\d+),\s*"
+            r"Words:\s*(?P<words>\d+),\s*"
+            r"Lines:\s*(?P<lines>\d+),\s*"
+            r"Duration:\s*(?P<duration>[^\]]+)\]",
+            re.MULTILINE,
+        )
+
+        items: list[str] = []
+        for match in pattern.finditer(compact):
+            raw_path = match.group("path").strip()
+            path = raw_path if raw_path else "/"
+            items.append(
+                f"- {path} [status={match.group('status')}, size={match.group('size')}, "
+                f"words={match.group('words')}, lines={match.group('lines')}, "
+                f"duration={match.group('duration').strip()}]"
+            )
+
+        if not items:
+            lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+            if not lines:
+                return "No ffuf output"
+            return "\n".join(lines[:15])
+
+        shown = items[:20]
+        if len(items) > 20:
+            shown.append(f"... (+{len(items) - 20} more)")
+
+        return "Found entries:\n" + "\n".join(shown)
+
+    def _summarize_ffuf_entries(self, result: dict[str, Any]) -> str:
+        """基于 ffuf JSON 结果生成可读摘要。"""
+        entries = result.get("entries", [])
+        if not isinstance(entries, list) or not entries:
+            return "No ffuf findings"
+
+        status_counts: dict[int, int] = {}
+        for entry in entries:
+            status = entry.get("status")
+            if isinstance(status, int):
+                status_counts[status] = status_counts.get(status, 0) + 1
+
+        status_text = ", ".join(
+            f"{code}:{count}" for code, count in sorted(status_counts.items())
+        ) or "-"
+
+        lines = [
+            f"Found entries: {len(entries)}",
+            f"Status counts: {status_text}",
+        ]
+
+        report_md = result.get("report_markdown")
+        if report_md:
+            lines.append(f"Readable report: {report_md}")
+
+        max_items = 20
+        for item in entries[:max_items]:
+            path = item.get("path", "/")
+            status = item.get("status", "-")
+            size = item.get("length", "-")
+            duration_ms = item.get("duration_ms", "-")
+            redirect = item.get("redirectlocation", "")
+            line = f"- {path} [status={status}, size={size}, duration={duration_ms}ms]"
+            if redirect:
+                line += f" -> {redirect}"
+            lines.append(line)
+
+        if len(entries) > max_items:
+            lines.append(f"... (+{len(entries) - max_items} more)")
+
+        return "\n".join(lines)
+
+    def _parse_ffuf_result(self, raw_output: str, args: dict[str, Any]) -> dict[str, Any]:
+        """解析 ffuf 结果，并生成可读 Markdown 报告。"""
+        result: dict[str, Any] = {"status": "success", "raw_output": raw_output}
+
+        output_file = args.get("-o")
+        output_format = str(args.get("-of", "")).lower()
+        if not output_file or output_format != "json":
+            return result
+
+        json_path = Path(str(output_file))
+        if not json_path.exists():
+            return result
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return result
+
+        items = data.get("results", [])
+        if not isinstance(items, list):
+            items = []
+
+        entries: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            input_data = item.get("input", {})
+            if not isinstance(input_data, dict):
+                input_data = {}
+            raw_path = str(input_data.get("FUZZ", ""))
+            path = raw_path if raw_path else "/"
+
+            duration_ns = item.get("duration", 0)
+            try:
+                duration_ms = round(float(duration_ns) / 1_000_000, 2)
+            except (TypeError, ValueError):
+                duration_ms = 0.0
+
+            entries.append(
+                {
+                    "path": path,
+                    "status": item.get("status"),
+                    "length": item.get("length"),
+                    "words": item.get("words"),
+                    "lines": item.get("lines"),
+                    "duration_ms": duration_ms,
+                    "url": item.get("url", ""),
+                    "host": item.get("host", ""),
+                    "content_type": item.get("content-type", ""),
+                    "redirectlocation": item.get("redirectlocation", ""),
+                }
+            )
+
+        result["commandline"] = data.get("commandline", "")
+        result["scan_time"] = data.get("time", "")
+        result["entries"] = entries
+
+        md_path = self._write_ffuf_markdown(json_path, result)
+        if md_path is not None:
+            result["report_markdown"] = str(md_path)
+
+        return result
+
+    def _write_ffuf_markdown(self, json_path: Path, result: dict[str, Any]) -> Optional[Path]:
+        """将 ffuf 结果写成 Markdown，便于用户阅读。"""
+        entries = result.get("entries", [])
+        if not isinstance(entries, list):
+            return None
+
+        status_counts: dict[int, int] = {}
+        for entry in entries:
+            status = entry.get("status")
+            if isinstance(status, int):
+                status_counts[status] = status_counts.get(status, 0) + 1
+
+        md_lines = [
+            "# FFUF 扫描结果",
+            "",
+            f"- 原始结果文件: `{json_path.name}`",
+            f"- 扫描时间: `{result.get('scan_time', '')}`",
+            f"- 命中数量: `{len(entries)}`",
+        ]
+
+        commandline = result.get("commandline", "")
+        if commandline:
+            md_lines.append(f"- 命令: `{commandline}`")
+
+        md_lines.extend(["", "## 状态码分布", "", "| 状态码 | 数量 |", "|---|---:|"])
+        if status_counts:
+            for code, count in sorted(status_counts.items()):
+                md_lines.append(f"| {code} | {count} |")
+        else:
+            md_lines.append("| - | 0 |")
+
+        md_lines.extend(
+            [
+                "",
+                "## 发现条目",
+                "",
+                "| 路径 | 状态 | 大小 | Words | Lines | 耗时(ms) | 重定向 |",
+                "|---|---:|---:|---:|---:|---:|---|",
+            ]
+        )
+
+        for entry in entries:
+            path = str(entry.get("path", "/")).replace("|", "\\|")
+            redirect = str(entry.get("redirectlocation", "")).replace("|", "\\|")
+            md_lines.append(
+                f"| {path} | {entry.get('status', '-')} | {entry.get('length', '-')} | "
+                f"{entry.get('words', '-')} | {entry.get('lines', '-')} | "
+                f"{entry.get('duration_ms', '-')} | {redirect} |"
+            )
+
+        md_path = json_path.with_suffix(".md")
+        md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        return md_path
+    def _clean_console_output(self, raw_output: str) -> str:
+        """清洗工具输出中的控制字符，便于终端阅读。"""
+        text = raw_output.replace("\r\n", "\n").replace("\r", "\n")
+        text = self._ansi_escape_re.sub("", text)
+        text = text.replace("[2K", "")
+        text = text.replace("[0m", "")
+        text = self._non_printable_re.sub("", text)
+
+        lines = [line.rstrip() for line in text.split("\n")]
+        compact_lines: list[str] = []
+        previous_blank = False
+        for line in lines:
+            is_blank = (line.strip() == "")
+            if is_blank and previous_blank:
+                continue
+            compact_lines.append(line)
+            previous_blank = is_blank
+
+        return "\n".join(compact_lines).strip()
+
     async def _run_tool(self, step: dict[str, Any]) -> dict[str, Any]:
         """运行工具。"""
         tool_name = step["tool"]
@@ -344,8 +623,7 @@ class WorkflowEngine:
             else:
                 cmd.append(str(value))
 
-        if self.verbose or self.dry_run:
-            console.print(f"[dim]命令:[/dim] {' '.join(cmd)}")
+        self._print_command(cmd)
 
         if self.dry_run:
             return {"status": "dry_run", "command": " ".join(cmd)}
@@ -366,20 +644,22 @@ class WorkflowEngine:
 
             output = stdout.decode(errors="replace")
 
-            if self.verbose:
-                console.print(f"[dim]输出:[/dim]\n{output}")
-
             if tool_name == "nmap":
-                return self._parse_nmap_result(
+                result = self._parse_nmap_result(
                     raw_output=output,
                     args=prepared_args,
                     temp_xml_path=temp_nmap_xml,
                 )
+            elif tool_name == "ffuf":
+                result = self._parse_ffuf_result(output, prepared_args)
+            else:
+                try:
+                    result = json.loads(output)
+                except json.JSONDecodeError:
+                    result = {"status": "success", "raw_output": output}
 
-            try:
-                return json.loads(output)
-            except json.JSONDecodeError:
-                return {"status": "success", "raw_output": output}
+            self._print_tool_output(tool_name, output, result)
+            return result
 
         except asyncio.TimeoutError:
             process.kill()

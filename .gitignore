@@ -56,3 +56,6 @@ workflow_result*.md
 
 # other
 publish.sh
+
+# plan
+information/
