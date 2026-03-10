@@ -1,10 +1,10 @@
 [tool.poetry]
 name = "neosec"
 version = "0.1.0"
-description = "网络安全测试工具集 - 工作流自动化 CLI 工具"
+description = "Network security workflow automation CLI tool"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
-packages = [{include = "neosec", from = "src"}]
+packages = [{include = "neobee", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -20,7 +20,7 @@ black = "^24.0.0"
 ruff = "^0.2.0"
 
 [tool.poetry.scripts]
-neosec = "neosec.cli.main:app"
+neosec = "neobee.cli.main:app"
 
 [build-system]
 requires = ["poetry-core"]
@@ -33,3 +33,4 @@ target-version = ['py310']
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
