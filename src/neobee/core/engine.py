@@ -1,8 +1,10 @@
 """工作流执行引擎"""
 import asyncio
 import json
+import os
 import re
 import shutil
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -14,6 +16,17 @@ from rich.console import Console
 from ..utils.variables import get_nested_value, replace_variables
 
 console = Console()
+
+# 脚本插件：扩展名 → 执行器
+_SCRIPT_RUNNERS: dict[str, list[str]] = {
+    ".py":  [sys.executable],
+    ".sh":  ["bash"],
+    ".rb":  ["ruby"],
+    ".js":  ["node"],
+    ".pl":  ["perl"],
+    ".php": ["php"],
+    "":     [],  # 无扩展名：直接执行（需要 chmod +x + shebang）
+}
 
 
 class WorkflowEngine:
@@ -660,11 +673,114 @@ class WorkflowEngine:
 
         return "\n".join(compact_lines).strip()
 
+    def _find_script(self, tool_name: str) -> Optional[Path]:
+        """按优先级查找脚本插件：用户目录 > 内置目录。"""
+        # 内置脚本目录（随包安装）
+        builtin_scripts_dir = Path(__file__).parent.parent / "scripts"
+        # 用户脚本目录
+        user_scripts_dir = Path.home() / ".neosec" / "scripts"
+
+        search_dirs = [user_scripts_dir, builtin_scripts_dir]
+        search_exts = list(_SCRIPT_RUNNERS.keys())  # .py .sh .rb .js .pl .php ""
+
+        for scripts_dir in search_dirs:
+            if not scripts_dir.exists():
+                continue
+            for ext in search_exts:
+                candidate = scripts_dir / f"{tool_name}{ext}"
+                if candidate.exists():
+                    return candidate
+        return None
+
+    async def _run_script_plugin(
+        self, step: dict[str, Any], script_path: Path
+    ) -> dict[str, Any]:
+        """执行脚本插件，通过stdin传入上下文，从stdout读取JSON结果。"""
+        tool_name = step["tool"]
+        timeout = step.get("timeout", self.config.get("defaults.timeout", 300))
+
+        # 解析变量
+        args = step.get("args", {})
+        resolved_args: dict[str, Any] = {}
+        for k, v in args.items():
+            resolved_args[k] = replace_variables(str(v), self.context["variables"]) if isinstance(v, str) else v
+
+        # 构建传入脚本的上下文
+        stdin_payload = json.dumps({
+            "args": resolved_args,
+            "context": {
+                "variables": self.context["variables"],
+                "results": self.context["results"],
+            },
+            "result_dir": str(self._get_result_dir() or ""),
+            "step_id": step.get("id", tool_name),
+        }, ensure_ascii=False)
+
+        # 确定执行器
+        ext = script_path.suffix.lower()
+        runner = _SCRIPT_RUNNERS.get(ext, [])
+        if runner:
+            cmd = runner + [str(script_path)]
+        else:
+            # 无扩展名：直接执行
+            cmd = [str(script_path)]
+
+        self._print_command(cmd)
+
+        if self.dry_run:
+            return {"status": "dry_run", "command": " ".join(cmd)}
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=stdin_payload.encode()),
+                timeout=timeout,
+            )
+
+            # stderr输出到日志（不作为错误）
+            if stderr:
+                stderr_text = stderr.decode(errors="replace").strip()
+                if stderr_text and self.verbose:
+                    console.print(f"[dim][{tool_name} stderr] {stderr_text}[/dim]")
+
+            if process.returncode != 0:
+                err_msg = stderr.decode(errors="replace").strip()
+                raise RuntimeError(
+                    f"脚本执行失败 (退出码 {process.returncode}): {err_msg}"
+                )
+
+            output = stdout.decode(errors="replace").strip()
+
+            # 解析stdout JSON结果
+            try:
+                result = json.loads(output)
+            except json.JSONDecodeError:
+                result = {"status": "success", "raw_output": output}
+
+            # 脚本插件自己负责写输出文件，不再用_save_tool_stdout覆盖
+            self._print_step_block(step.get("name", tool_name), cmd, tool_name, output, result)
+            return result
+
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise TimeoutError(f"脚本执行超时 ({timeout}秒)")
+
     async def _run_tool(self, step: dict[str, Any]) -> dict[str, Any]:
         """运行工具。"""
         tool_name = step["tool"]
         args = step.get("args", {})
         timeout = step.get("timeout", self.config.get("defaults.timeout", 300))
+
+        # 优先查找脚本插件
+        script_path = self._find_script(tool_name)
+        if script_path:
+            return await self._run_script_plugin(step, script_path)
 
         tool_path = self.config.get_tool_path(tool_name)
 
@@ -672,10 +788,17 @@ class WorkflowEngine:
             raise FileNotFoundError(f"工具未找到: {tool_path}")
 
         prepared_args = dict(args)
-        # For ffuf, remove JSON output flags - we'll save raw stdout instead
+        # For ffuf: redirect -o JSON to result_dir so entries are parsed
+        # and the file lands in the right place (not cwd)
         if tool_name == "ffuf":
-            prepared_args.pop("-o", None)
-            prepared_args.pop("-of", None)
+            ffuf_out_dir = Path(self._output_dir) if self._output_dir else self._get_result_dir()
+            if ffuf_out_dir:
+                ffuf_json_name = str(Path(str(prepared_args.get("-o", "ffuf_result.json"))).name)
+                prepared_args["-o"] = str(ffuf_out_dir / ffuf_json_name)
+                prepared_args["-of"] = "json"
+            else:
+                prepared_args.pop("-o", None)
+                prepared_args.pop("-of", None)
         temp_nmap_xml: Optional[Path] = None
         if tool_name == "nmap" and "-oX" not in prepared_args and "-oA" not in prepared_args:
             with tempfile.NamedTemporaryFile(prefix="neosec_nmap_", suffix=".xml", delete=False) as tmp:

@@ -1,0 +1,184 @@
+{
+  "name": "html_extraction_workflow",
+  "description": "Nmap端口扫描 + ffuf目录爆破 + HTML源码提取（去噪后保存供AI分析）",
+  "version": "1.0.0",
+  "variables": {
+    "target": "",
+    "wordlist": "/usr/share/wordlists/dirb/common.txt",
+    "nmap_ports": "1-10000",
+    "ffuf_threads": "40",
+    "filter_status": "200,301,302",
+    "request_timeout": "10"
+  },
+  "steps": [
+    {
+      "id": "port_scan",
+      "order": 1,
+      "name": "Nmap端口扫描",
+      "tool": "nmap",
+      "args": {
+        "-sV": true,
+        "-sC": true,
+        "-p": "{{nmap_ports}}",
+        "-T4": true,
+        "--open": true,
+        "target": "{{target}}"
+      },
+      "save_result_as": "port_scan_result",
+      "timeout": 600,
+      "retry": 1,
+      "continue_on_error": false
+    },
+    {
+      "id": "ffuf_port_80",
+      "order": 2,
+      "name": "HTTP(80)目录爆破",
+      "depends_on": ["port_scan"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 80
+      },
+      "tool": "ffuf",
+      "args": {
+        "-w": "{{wordlist}}",
+        "-u": "http://{{target}}/FUZZ",
+        "-t": "{{ffuf_threads}}",
+        "-mc": "200,204,301,302,307,401,403",
+        "-fc": "404"
+      },
+      "save_result_as": "ffuf_80_result",
+      "timeout": 900,
+      "retry": 1,
+      "continue_on_error": true
+    },
+    {
+      "id": "ffuf_port_443",
+      "order": 2,
+      "name": "HTTPS(443)目录爆破",
+      "depends_on": ["port_scan"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 443
+      },
+      "tool": "ffuf",
+      "args": {
+        "-w": "{{wordlist}}",
+        "-u": "https://{{target}}/FUZZ",
+        "-t": "{{ffuf_threads}}",
+        "-mc": "200,204,301,302,307,401,403",
+        "-fc": "404"
+      },
+      "save_result_as": "ffuf_443_result",
+      "timeout": 900,
+      "retry": 1,
+      "continue_on_error": true
+    },
+    {
+      "id": "ffuf_port_8080",
+      "order": 2,
+      "name": "HTTP(8080)目录爆破",
+      "depends_on": ["port_scan"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 8080
+      },
+      "tool": "ffuf",
+      "args": {
+        "-w": "{{wordlist}}",
+        "-u": "http://{{target}}:8080/FUZZ",
+        "-t": "{{ffuf_threads}}",
+        "-mc": "200,204,301,302,307,401,403",
+        "-fc": "404"
+      },
+      "save_result_as": "ffuf_8080_result",
+      "timeout": 900,
+      "retry": 1,
+      "continue_on_error": true
+    },
+    {
+      "id": "extract_html_80",
+      "order": 3,
+      "name": "提取HTTP(80)页面HTML",
+      "depends_on": ["ffuf_port_80"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 80
+      },
+      "tool": "html_extraction",
+      "args": {
+        "source": "ffuf_80_result",
+        "base_url": "http://{{target}}",
+        "filter_status": "{{filter_status}}",
+        "timeout": "{{request_timeout}}",
+        "verify_ssl": "false"
+      },
+      "save_result_as": "html_80_result",
+      "timeout": 300,
+      "retry": 0,
+      "continue_on_error": true
+    },
+    {
+      "id": "extract_html_443",
+      "order": 3,
+      "name": "提取HTTPS(443)页面HTML",
+      "depends_on": ["ffuf_port_443"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 443
+      },
+      "tool": "html_extraction",
+      "args": {
+        "source": "ffuf_443_result",
+        "base_url": "https://{{target}}",
+        "filter_status": "{{filter_status}}",
+        "timeout": "{{request_timeout}}",
+        "verify_ssl": "false"
+      },
+      "save_result_as": "html_443_result",
+      "timeout": 300,
+      "retry": 0,
+      "continue_on_error": true
+    },
+    {
+      "id": "extract_html_8080",
+      "order": 3,
+      "name": "提取HTTP(8080)页面HTML",
+      "depends_on": ["ffuf_port_8080"],
+      "when": {
+        "type": "contains",
+        "source": "port_scan_result.open_ports",
+        "value": 8080
+      },
+      "tool": "html_extraction",
+      "args": {
+        "source": "ffuf_8080_result",
+        "base_url": "http://{{target}}:8080",
+        "filter_status": "{{filter_status}}",
+        "timeout": "{{request_timeout}}",
+        "verify_ssl": "false"
+      },
+      "save_result_as": "html_8080_result",
+      "timeout": 300,
+      "retry": 0,
+      "continue_on_error": true
+    },
+    {
+      "id": "summary",
+      "order": 4,
+      "name": "生成扫描摘要",
+      "depends_on": ["port_scan"],
+      "tool": "echo",
+      "args": {
+        "message": "扫描完成 - 目标: {{target}}"
+      },
+      "timeout": 10,
+      "retry": 0,
+      "continue_on_error": false
+    }
+  ]
+}
