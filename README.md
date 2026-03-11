@@ -3,365 +3,227 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Neosec 是一款为渗透测试人员提供便捷的工作流自动化 CLI 工具。
+Neosec 是一款面向渗透测试人员的工作流自动化 CLI 工具。通过 JSON 模板定义扫描流程，支持并行执行、条件执行、脚本插件扩展，并将结果整理到统一目录供后期分析。
 
 ## 特性
 
-- 🚀 **工作流自动化**: 通过 JSON 模板定义和执行复杂的安全测试工作流
-- ⚡ **并行执行**: 支持多个独立任务同时执行，提高测试效率
-- 🔀 **条件执行**: 根据前置步骤的结果动态决定执行路径
-- 🔗 **数据传递**: 步骤间无缝传递和引用执行结果
-- 📊 **实时进度**: 美观的终端 UI 实时显示执行进度
-- 🔄 **错误重试**: 自动重试失败的步骤，提高稳定性
-- 📝 **执行历史**: 自动记录所有执行历史，方便回溯
-- 🎨 **自定义工具**: 支持集成任何命令行工具或自定义脚本
+- **工作流自动化** — JSON 模板定义复杂渗透测试流程
+- **并行执行** — 同一 order 的独立步骤自动并行，提升效率
+- **条件执行** — 根据前置步骤结果（如开放端口）动态决策
+- **脚本插件** — 支持 Python/Bash/Ruby/Node.js 等多语言脚本扩展工具
+- **结构化输出** — 所有结果统一保存至 `~/.neosec/result/<ip>/`，原始 stdout 直接可读
+- **内置解析器** — 自动解析 nmap XML、ffuf JSON，提取结构化数据
+- **HTML 提取** — 内置 `html_extraction` 工具，去除噪声后保存页面源码供 AI 分析
 
 ## 安装
 
-### 使用 Poetry
+### 使用 pipx（推荐）
 
 ```bash
-# 克隆仓库
 git clone https://github.com/Neobee714/neosec.git
 cd neosec
-
-# 安装依赖
-poetry install
-
-# 激活虚拟环境
-poetry shell
-
-# 初始化配置
+pipx install .
+pipx inject neosec beautifulsoup4 httpx
 neosec init
 ```
 
 ### 使用 pip
 
 ```bash
-# 克隆仓库
 git clone https://github.com/Neobee714/neosec.git
 cd neosec
-
-# 安装
 pip install -e .
-
-# 初始化配置
-neosec init
-```
-
-### 使用pipx（推荐）
-```bash
-# 克隆仓库
-git clone https://github.com/Neobee714/neosec.git
-cd neosec
-
-# 安装
-pipx install .
-
-# 初始化配置
 neosec init
 ```
 
 ## 快速开始
 
-### 1. 初始化
-
-首次使用需要初始化配置和目录结构：
+### 初始化
 
 ```bash
 neosec init
 ```
 
-这将创建：
-- `~/.neosec/config.yaml` - 配置文件
-- `~/.neosec/templates/` - 用户模板目录
-- `~/.neosec/log/` - 日志目录
-- `~/.neosec/history/` - 执行历史目录
+创建以下目录结构：
 
-### 2. 查看可用模板
-
-```bash
-neosec workflow --list-templates
+```
+~/.neosec/
+  config.yaml        # 配置文件
+  templates/         # 用户模板目录
+  scripts/           # 用户自定义脚本插件
+  result/            # 扫描结果（按 IP 分目录）
+  log/               # 日志
+  history/           # 执行历史
 ```
 
-### 3. 执行工作流
+### 执行工作流
 
 ```bash
-# 使用内置模板
-neosec workflow --template sequential_workflow --variables target:example.com
+# Nmap 端口扫描 + ffuf 目录爆破
+neosec workflow -t nmap_ffuf_workflow.json -v target:192.168.1.1
 
-# 使用自定义模板
-neosec workflow --template ./my_workflow.json --variables target:192.168.1.1
+# 追加 HTML 源码提取
+neosec workflow -t html_extraction_workflow.json -v target:192.168.1.1
 
-# 指定多个变量
-neosec workflow --template parallel_workflow \
-  --variables target:example.com \
-  --variables wordlist:/usr/share/wordlists/common.txt
-
-# 生成 Markdown 报告
-neosec workflow --template full_scan \
-  --variables target:example.com \
+# 指定输出文件并生成 Markdown 报告
+neosec workflow -t nmap_ffuf_workflow.json \
+  -v target:192.168.1.1 \
   --output ./results/scan.json \
   --report
 ```
 
-### 4. 查看执行历史
+### 查看结果
 
 ```bash
-# 查看最近 10 条历史
-neosec history
-
-# 查看最近 20 条
-neosec history --limit 20
-
-# 筛选特定工作流
-neosec history --workflow parallel_workflow
+ls ~/.neosec/result/192.168.1.1/
+# port_scan.txt          nmap 原始输出（已过滤噪声）
+# ffuf_port_80.txt       ffuf :80 原始输出
+# ffuf_port_8080.txt     ffuf :8080 原始输出
+# extract_html_80.txt    去噪后的 HTML 源码
+# workflow_result.json   结构化结果数据
 ```
 
 ## 工作流模板
 
-### 模板结构
-
 ```json
 {
   "name": "my_workflow",
-  "description": "我的自定义工作流",
   "version": "1.0.0",
-  "variables": {
-    "target": "example.com",
-    "wordlist": "/usr/share/wordlists/common.txt"
-  },
+  "variables": { "target": "" },
   "steps": [
     {
       "id": "port_scan",
       "order": 1,
-      "name": "端口扫描",
       "tool": "nmap",
-      "args": {
-        "-sV": true,
-        "target": "{{target}}"
-      },
+      "args": { "-sV": true, "-p": "1-10000", "target": "{{target}}" },
       "save_result_as": "port_scan_result",
-      "timeout": 300,
-      "retry": 1,
-      "continue_on_error": false
+      "timeout": 600
+    },
+    {
+      "id": "ffuf_80",
+      "order": 2,
+      "depends_on": ["port_scan"],
+      "when": { "type": "contains", "source": "port_scan_result.open_ports", "value": 80 },
+      "tool": "ffuf",
+      "args": { "-w": "/usr/share/wordlists/dirb/common.txt", "-u": "http://{{target}}/FUZZ" },
+      "save_result_as": "ffuf_80_result"
+    },
+    {
+      "id": "extract_html",
+      "order": 3,
+      "depends_on": ["ffuf_80"],
+      "tool": "html_extraction",
+      "args": {
+        "source": "ffuf_80_result",
+        "base_url": "http://{{target}}",
+        "filter_status": "200,301"
+      }
     }
   ]
 }
 ```
 
-### 核心功能
+## 脚本插件
 
-#### 1. 并行执行
+在 `~/.neosec/scripts/` 放置脚本文件即可扩展新工具，优先级高于内置脚本：
 
-使用 `parallel_group` 将多个步骤分组并行执行：
-
-```json
-{
-  "id": "subdomain_enum",
-  "order": 1,
-  "parallel_group": "recon",
-  "tool": "subfinder",
-  "args": {"domain": "{{target}}"}
-}
+```
+~/.neosec/scripts/
+  my_tool.py        # Python 脚本
+  my_tool.sh        # Bash 脚本
+  my_tool.js        # Node.js 脚本
 ```
 
-#### 2. 条件执行
+脚本通过 stdin 接收 JSON 上下文，通过 stdout 返回 JSON 结果：
 
-使用 `when` 根据前置步骤结果决定是否执行：
+```python
+import json, sys
+payload = json.loads(sys.stdin.read())
+args    = payload["args"]            # 工作流 step.args
+results = payload["context"]["results"]  # 前置步骤结果
+result_dir = payload["result_dir"]   # ~/.neosec/result/<ip>/
 
-```json
-{
-  "id": "web_scan",
-  "depends_on": ["port_scan"],
-  "when": {
-    "type": "contains_any",
-    "source": "port_scan_result.open_ports",
-    "values": [80, 443, 8080]
-  },
-  "tool": "ffuf"
-}
+# ... 执行逻辑，将文件写入 result_dir ...
+
+print(json.dumps({"status": "success", "pages": 3}))
 ```
 
-支持的条件类型：
-- `contains`: 包含指定值
-- `contains_any`: 包含任意一个值
-- `not_contains_any`: 不包含任何值
-- `equals`: 精确匹配
-- `greater_than`: 大于
-- `less_than`: 小于
+支持的语言：`.py` `.sh` `.rb` `.js` `.pl` `.php` 及可执行文件（无扩展名）
 
-#### 3. 数据传递
+## 内置模板
 
-使用 `save_result_as` 保存结果，使用 `{{variable}}` 引用：
+| 模板 | 说明 |
+|---|---|
+| `nmap_ffuf_workflow.json` | Nmap 端口扫描 + ffuf 目录爆破（80/443/8080/8000/8888） |
+| `html_extraction_workflow.json` | 在 nmap_ffuf 基础上追加 HTML 源码提取 |
 
-```json
-{
-  "id": "port_scan",
-  "save_result_as": "ports",
-  "tool": "nmap"
-},
-{
-  "id": "service_scan",
-  "depends_on": ["port_scan"],
-  "args": {
-    "ports": "{{ports.open_ports}}"
-  }
-}
-```
+## 内置脚本插件
 
-#### 4. 循环执行
+| 脚本 | 说明 |
+|---|---|
+| `html_extraction.py` | 批量抓取 URL，清理外联 CSS/图片/script 后保存纯净 HTML |
 
-使用 `for_each` 对数组元素循环执行：
+## 条件类型
 
-```json
-{
-  "id": "scan_ports",
-  "for_each": "{{ports.open_ports}}",
-  "args": {
-    "port": "{{item.port}}",
-    "service": "{{item.service}}"
-  }
-}
+| 类型 | 说明 |
+|---|---|
+| `contains` | 列表包含指定值 |
+| `contains_any` | 列表包含任意一个值 |
+| `not_contains_any` | 列表不包含任何指定值 |
+| `equals` | 精确匹配 |
+| `greater_than` | 大于 |
+| `less_than` | 小于 |
+
+## 命令参考
+
+```bash
+neosec workflow [OPTIONS]
+  -t, --template TEXT     模板名称或文件路径
+  -v, --variables TEXT    变量（格式: key:value，可多次指定）
+  -o, --output TEXT       输出文件路径
+  --report                生成 Markdown 报告
+  --dry-run               干运行，不实际执行
+  --verbose               详细输出
+  --quiet                 静默模式
+
+neosec history [OPTIONS]
+  -n, --limit INTEGER     显示最近 N 条（默认 10）
+  -w, --workflow TEXT     筛选工作流名称
+
+neosec init               初始化配置和目录
+neosec version            显示版本信息
 ```
 
 ## 配置文件
 
-配置文件位于 `~/.neosec/config.yaml`：
+`~/.neosec/config.yaml`：
 
 ```yaml
-# 工具路径配置
 tools:
-  nmap: /usr/bin/nmap
-  ffuf: /usr/local/bin/ffuf
-  subfinder: /usr/bin/subfinder
-  nuclei: /usr/bin/nuclei
+  nmap: nmap
+  ffuf: ffuf
+  subfinder: subfinder
+  nuclei: nuclei
 
-# 默认参数
 defaults:
   wordlist: /usr/share/wordlists/dirb/common.txt
   timeout: 300
   retry: 1
 
-# 输出配置
 output:
   default_path: ./
   default_filename: workflow_result.json
   log_path: ~/.neosec/log/
-
-# 其他配置
-verbose: false
-quiet: false
-```
-
-## 命令行选项
-
-### 全局选项
-
-```bash
-neosec --version              # 显示版本信息
-neosec --help                 # 显示帮助信息
-```
-
-### workflow 命令
-
-```bash
-neosec workflow [OPTIONS]
-
-选项:
-  --template, -t TEXT          模板名称或文件路径
-  --list-templates            列出所有可用模板
-  --validate TEXT             验证模板文件
-  --variables, -v TEXT        变量值 (格式: key:value)
-  --output, -o TEXT           输出文件路径
-  --report                    生成 Markdown 报告
-  --dry-run                   干运行模式，不实际执行
-  --config, -c TEXT           自定义配置文件路径
-  --verbose                   详细输出模式
-  --quiet, -q                 静默模式
-  --help                      显示帮助信息
-```
-
-### history 命令
-
-```bash
-neosec history [OPTIONS]
-
-选项:
-  --limit, -n INTEGER         显示最近 N 条记录 (默认: 10)
-  --workflow, -w TEXT         筛选工作流名称
-  --help                      显示帮助信息
-```
-
-## 内置模板
-
-- `sequential_workflow` - 基础顺序执行工作流
-- `sequential_workflow_v2` - 带超时和重试的顺序执行
-- `conditional_web_workflow` - 条件执行 Web 扫描
-- `conditional_service_workflow` - 根据服务类型条件执行
-- `parallel_workflow` - 并行执行多个侦察任务
-- `data_passing_workflow` - 步骤间数据传递示例
-
-## 自定义工具集成
-
-Neosec 支持集成任何命令行工具。只需在模板中指定工具路径和参数：
-
-```json
-{
-  "id": "custom_scan",
-  "tool": "/path/to/your/tool.sh",
-  "args": {
-    "target": "{{target}}",
-    "--option": "value"
-  }
-}
-```
-
-建议自定义工具输出 JSON 格式以支持数据传递：
-
-```json
-{
-  "status": "success",
-  "data": {
-    "key": "value"
-  }
-}
 ```
 
 ## 开发
 
-### 运行测试
-
 ```bash
-poetry run pytest
+poetry run pytest          # 运行测试
+poetry run black src/      # 格式化
+poetry run ruff check src/ # 检查
 ```
-
-### 代码格式化
-
-```bash
-poetry run black src/
-poetry run ruff check src/
-```
-
-## 贡献
-
-欢迎贡献！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 开启 Pull Request
 
 ## 许可证
 
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
-## 致谢
-
-- [Typer](https://typer.tiangolo.com/) - 优秀的 CLI 框架
-- [Rich](https://rich.readthedocs.io/) - 美观的终端输出库
-
-## 联系方式
-
-如有问题或建议，请提交 [Issue](https://github.com/Neobee714/neosec/issues)
+MIT — 详见 [LICENSE](LICENSE)
